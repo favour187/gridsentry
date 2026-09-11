@@ -1,5 +1,6 @@
-from app.main import app  
-@app.on_event("startup")
+from app.main import app
+
+@app.on_event('startup')
 def _ensure_db():
     from app.db import init_db
     from app.db import SessionLocal
