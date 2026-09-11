@@ -51,7 +51,7 @@ def refine_with_llm(alert, reading: dict | None) -> dict | None:
                 "temperature": 0.2,
                 "max_tokens": 900,
             },
-            timeout=25,
+            timeout=8,
         )
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"].strip()

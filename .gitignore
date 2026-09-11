@@ -3,3 +3,4 @@ __pycache__/
 web/node_modules/
 data/*.db
 .env
+.vercel
