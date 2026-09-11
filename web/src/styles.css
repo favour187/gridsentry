@@ -136,6 +136,24 @@ body {
 .grid-2 { display: grid; grid-template-columns: 1fr 380px; gap: 12px; }
 
 /* ---------- network schematic ---------- */
+.schemwrap { position: relative; overflow: hidden; }
+.schemwrap::before {
+  content: "";
+  position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background:
+    linear-gradient(rgba(56, 225, 255, 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 225, 255, 0.028) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+.schemwrap::after {
+  content: "";
+  position: absolute; left: 0; right: 0; height: 34px; z-index: 1; pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(47, 213, 117, 0.06), transparent);
+  animation: sweep 5.5s linear infinite;
+}
+@keyframes sweep { 0% { top: -40px; } 100% { top: 110%; } }
+.kpi--crit .kpi__value { animation: blink 1.5s ease-in-out infinite; }
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
 .schem { width: 100%; height: auto; display: block; }
 .schem .trunk { stroke: var(--line-2); stroke-width: 2.5; fill: none; }
 .schem .flow { stroke: rgba(47, 213, 117, 0.5); stroke-width: 1.6; fill: none; stroke-dasharray: 5 9; animation: dash 1.4s linear infinite; }

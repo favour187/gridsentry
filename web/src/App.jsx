@@ -144,7 +144,7 @@ function Overview({ data, hist, onPick }) {
       <div className="grid-2">
         <div className="panel">
           <div className="panel__head">Network schematic — 3 feeders · 4 transformers · 18 meters <span className="fill" /> <span className="mono st-ok">● live</span></div>
-          <div style={{ padding: "8px 10px" }}>
+          <div className="schemwrap" style={{ padding: "8px 10px" }}>
             <NetworkMap meters={data.meters} alerts={data.alerts} onPick={onPick} />
           </div>
         </div>
