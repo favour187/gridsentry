@@ -1,27 +1,20 @@
 import datetime as dt
 import json
-
 from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-
 from . import sim
 from .db import SessionLocal, engine
 from .models import Alert, Meter, Reading, Scenario
 from .engine import evaluate
 from .ai_skills import investigate
-
 router = APIRouter(prefix="/api")
-
-
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
-
-
 def seed(db: Session):
     if db.query(Meter).count():
         return
@@ -29,15 +22,10 @@ def seed(db: Session):
         db.add(Meter(id=mid, name=name, feeder=feeder, transformer=tx, kind=kind,
                      baseline_kwh_h=base, token=sim.token_for(mid), x=x, y=y))
     db.commit()
-
-
-# ---------- schemas ----------
 class ScenarioIn(BaseModel):
-    kind: str  # bypass | sag | imbalance | offline | tamper
+    kind: str  
     meter_id: str | None = None
     feeder: str | None = None
-
-
 class IngestIn(BaseModel):
     voltage: float
     current: float
@@ -47,8 +35,6 @@ class IngestIn(BaseModel):
     phases: list[float] = [230.0, 230.0, 230.0]
     phase_current: list[float] = [0.0, 0.0, 0.0]
     cover_open: bool = False
-
-
 def _alert_payload(a: Alert) -> dict:
     return {
         "id": a.id, "kind": a.kind, "severity": a.severity, "meter_id": a.meter_id,
@@ -56,30 +42,22 @@ def _alert_payload(a: Alert) -> dict:
         "status": a.status, "created_at": a.created_at.isoformat() + "Z",
         "updated_at": a.updated_at.isoformat() + "Z",
     }
-
-
 def _status_for(r: dict) -> str:
     if r["voltage"] < sim.NOMINAL_V * 0.85 or r["voltage"] > sim.NOMINAL_V * 1.1:
         return "fault"
     return "ok"
-
-
-# ---------- live ----------
 @router.get("/health")
 def health():
     return {"status": "ok", "service": "gridsentry", "time": dt.datetime.utcnow().isoformat() + "Z"}
-
-
 @router.get("/live")
 def live(db: Session = Depends(get_db)):
     now = dt.datetime.utcnow()
-    scen = sim.live_scenarios(db.query(Scenario).filter(Scenario.active == True).all())  # noqa: E712
+    scen = sim.live_scenarios(db.query(Scenario).filter(Scenario.active == True).all())  
     db.commit()
     snapshot = sim.network_tick(now, scen)
     seed(db)
     specs = [s[0] for s in sim.METER_SPECS]
     fresh = evaluate(snapshot, specs, now)
-    # upsert alerts (dedupe by key)
     for a in fresh:
         row = db.query(Alert).filter(Alert.key == a["key"]).first()
         if row:
@@ -117,8 +95,6 @@ def live(db: Session = Depends(get_db)):
             "critical": sum(1 for a in alerts if a["severity"] == "critical"),
         },
     }
-
-
 @router.get("/network")
 def network(db: Session = Depends(get_db)):
     seed(db)
@@ -130,15 +106,11 @@ def network(db: Session = Depends(get_db)):
         feeders[m.feeder]["transformers"][m.transformer].append(m.id)
         feeders[m.feeder]["meters"] += 1
     return {"feeders": feeders, "nominal_v": sim.NOMINAL_V}
-
-
 @router.get("/devices")
 def devices(db: Session = Depends(get_db)):
     seed(db)
     return {"devices": [{"meter_id": m.id, "name": m.name, "token": m.token, "feeder": m.feeder,
                          "transformer": m.transformer} for m in db.query(Meter).order_by(Meter.id).all()]}
-
-
 @router.get("/meters/{meter_id}")
 def meter_detail(meter_id: str, db: Session = Depends(get_db)):
     spec = next((s for s in sim.METER_SPECS if s[0] == meter_id), None)
@@ -146,9 +118,6 @@ def meter_detail(meter_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "meter not found")
     return {"meter_id": meter_id, "name": spec[1], "feeder": spec[2], "transformer": spec[3],
             "kind": spec[4], "history": sim.history_series(spec)}
-
-
-# ---------- scenarios (demo + field-test hook) ----------
 @router.post("/scenarios")
 def start_scenario(body: ScenarioIn, db: Session = Depends(get_db)):
     if body.kind not in ("bypass", "sag", "imbalance", "offline", "tamper"):
@@ -157,17 +126,12 @@ def start_scenario(body: ScenarioIn, db: Session = Depends(get_db)):
     db.add(s)
     db.commit()
     return {"ok": True, "scenario": {"id": s.id, "kind": s.kind, "meter_id": s.meter_id, "feeder": s.feeder}}
-
-
 @router.get("/scenarios")
 def list_scenarios(db: Session = Depends(get_db)):
     sim.live_scenarios(db.query(Scenario).all())
     db.commit()
     return {"active": [{"id": s.id, "kind": s.kind, "meter_id": s.meter_id, "started_at": s.started_at.isoformat() + "Z"}
-                       for s in db.query(Scenario).filter(Scenario.active == True).all()]}  # noqa: E712
-
-
-# ---------- alerts ----------
+                       for s in db.query(Scenario).filter(Scenario.active == True).all()]}  
 @router.post("/alerts/{alert_id}/ack")
 def ack_alert(alert_id: int, db: Session = Depends(get_db)):
     a = db.get(Alert, alert_id)
@@ -177,8 +141,6 @@ def ack_alert(alert_id: int, db: Session = Depends(get_db)):
     a.updated_at = dt.datetime.utcnow()
     db.commit()
     return _alert_payload(a)
-
-
 @router.post("/alerts/{alert_id}/resolve")
 def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
     a = db.get(Alert, alert_id)
@@ -188,8 +150,6 @@ def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
     a.updated_at = dt.datetime.utcnow()
     db.commit()
     return _alert_payload(a)
-
-
 @router.post("/investigate/{alert_id}")
 def investigate_alert(alert_id: int, db: Session = Depends(get_db)):
     a = db.get(Alert, alert_id)
@@ -197,16 +157,13 @@ def investigate_alert(alert_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404)
     reading = None
     if a.meter_id:
-        scen = sim.live_scenarios(db.query(Scenario).filter(Scenario.active == True).all())  # noqa: E712
+        scen = sim.live_scenarios(db.query(Scenario).filter(Scenario.active == True).all())  
         db.commit()
         for r in sim.network_tick(dt.datetime.utcnow(), scen):
             if r["meter_id"] == a.meter_id:
                 reading = r
                 break
     return investigate(a, reading)
-
-
-# ---------- real-device ingestion ----------
 @router.post("/ingest/{meter_id}")
 def ingest(meter_id: str, body: IngestIn, authorization: str = Header(default=""),
            db: Session = Depends(get_db)):

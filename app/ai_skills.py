@@ -1,5 +1,3 @@
-"""Investigator reports: deterministic offline provider (always available),
-optional OpenAI-compatible LLM (Groq) refinement when configured."""
 import json
 import os
 import httpx

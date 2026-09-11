@@ -1,35 +1,25 @@
-"""Deterministic detection rules over a telemetry snapshot.
-Every alert carries its evidence as numbers — nothing is invented."""
 import datetime as dt
 import json
-
-UNDER_V = 195.0      # 230 V nominal -> ~15% sag
+UNDER_V = 195.0      
 CRIT_V = 185.0
 OVER_V = 253.0
-DROP_RATIO = 0.45    # kw vs baseline -> suspected bypass
-IMBALANCE = 0.45     # phase-current spread vs mean
-REVERSE_TAMPER = 5   # reverse-flow events per window
-TX_LOSS = 0.35       # transformer-group delivered vs expected
-
-
+DROP_RATIO = 0.45    
+IMBALANCE = 0.45     
+REVERSE_TAMPER = 5   
+TX_LOSS = 0.35       
 def _bucket(now: dt.datetime) -> str:
     return now.strftime("%Y%m%d%H") + f"{(now.minute // 30) * 30:02d}"
-
-
 def evaluate(snapshot: list[dict], all_specs: list[str], now: dt.datetime) -> list[dict]:
     alerts: list[dict] = []
     bucket = _bucket(now)
     seen = {r["meter_id"] for r in snapshot}
-
     by_tx: dict[str, dict] = {}
     for r in snapshot:
         by_tx.setdefault(r["transformer"], {"exp": 0.0, "act": 0.0, "feeder": r["feeder"]})
         by_tx[r["transformer"]]["exp"] += r["baseline_kw"]
         by_tx[r["transformer"]]["act"] += r["kw"]
-
     for r in snapshot:
         mid = r["meter_id"]
-        # 1) suspected bypass / energy diversion
         if r["baseline_kw"] > 0.05 and r["kw"] < DROP_RATIO * r["baseline_kw"]:
             sev = "critical"
             title = f"Suspected bypass — {r['name']} drawing {int((1 - r['kw'] / r['baseline_kw']) * 100)}% below baseline"
@@ -43,7 +33,6 @@ def evaluate(snapshot: list[dict], all_specs: list[str], now: dt.datetime) -> li
                     "transformer": r["transformer"],
                 },
             })
-        # 2) voltage faults
         if r["voltage"] < CRIT_V:
             alerts.append({
                 "key": f"undervolt:{mid}:{bucket}", "kind": "undervoltage", "severity": "critical",
@@ -65,7 +54,6 @@ def evaluate(snapshot: list[dict], all_specs: list[str], now: dt.datetime) -> li
                 "title": f"Overvoltage at {r['name']} — {r['voltage']} V",
                 "evidence": {"voltage": r["voltage"], "nominal": 230.0, "transformer": r["transformer"]},
             })
-        # 3) phase imbalance
         pc = r.get("phase_current") or []
         if len(pc) == 3 and sum(pc) > 0:
             spread = (max(pc) - min(pc)) / (sum(pc) / 3)
@@ -76,7 +64,6 @@ def evaluate(snapshot: list[dict], all_specs: list[str], now: dt.datetime) -> li
                     "title": f"Phase imbalance at {r['name']} — {int(spread * 100)}% spread across L1/L2/L3",
                     "evidence": {"phase_current": pc, "spread": round(spread, 2), "transformer": r["transformer"]},
                 })
-        # 4) tamper: reverse energy flow
         if r["reverse_events"] >= REVERSE_TAMPER:
             alerts.append({
                 "key": f"tamper:{mid}:{bucket}", "kind": "tamper", "severity": "critical",
@@ -85,8 +72,6 @@ def evaluate(snapshot: list[dict], all_specs: list[str], now: dt.datetime) -> li
                 "evidence": {"reverse_events": r["reverse_events"], "cover_open": bool(r["flags"].get("cover_open")),
                              "kw_now": r["kw"], "transformer": r["transformer"]},
             })
-
-    # 5) offline meters
     for spec_id in all_specs:
         if spec_id not in seen:
             alerts.append({
@@ -95,8 +80,6 @@ def evaluate(snapshot: list[dict], all_specs: list[str], now: dt.datetime) -> li
                 "title": f"{spec_id} stopped reporting — meter offline or COMMS failure",
                 "evidence": {"last_seen_check": now.isoformat() + "Z"},
             })
-
-    # 6) transformer-group losses (theft hides here even when meters look fine)
     for tx, d in by_tx.items():
         if d["exp"] > 0.2:
             loss = 1 - d["act"] / d["exp"]
@@ -109,8 +92,6 @@ def evaluate(snapshot: list[dict], all_specs: list[str], now: dt.datetime) -> li
                                  "loss_pct": round(loss * 100, 1), "feeder": d["feeder"]},
                 })
     return alerts
-
-
 def recommended_action(kind: str, ev: dict) -> str:
     if kind == "bypass":
         return ("Dispatch a field team to inspect the meter seal and service line for a direct hook. "

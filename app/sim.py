@@ -1,19 +1,13 @@
-"""Deterministic virtual-meter network: synthesizes plausible telemetry every tick
-and applies active field scenarios (bypass, sag, imbalance, offline, tamper)."""
 import datetime as dt
 import hashlib
 import math
 import random
-
 NOMINAL_V = 230.0
-
-# feeder -> transformer -> meters laid out on a schematic grid
 NETWORK = {
     "FEEDER-A": {"tf": ["TX-A1", "TX-A2"]},
     "FEEDER-B": {"tf": ["TX-B1"]},
 }
 METER_SPECS = [
-    # id, name, feeder, transformer, kind, baseline kWh/h, grid x, y
     ("M-101", "Sabon Gari market row", "FEEDER-A", "TX-A1", "shop", 0.85, 120, 150),
     ("M-102", "Welding workshop 3", "FEEDER-A", "TX-A1", "industrial", 1.60, 210, 150),
     ("M-103", "Amina cold store", "FEEDER-A", "TX-A1", "commerce", 1.10, 300, 150),
@@ -33,14 +27,9 @@ METER_SPECS = [
     ("M-207", "Borehole 2", "FEEDER-B", "TX-B1", "utility", 0.90, 700, 450),
     ("M-208", "Church annex", "FEEDER-B", "TX-B1", "public", 0.30, 790, 450),
 ]
-
-
 def token_for(meter_id: str) -> str:
     return "gs_" + hashlib.sha256(f"gridsentry:{meter_id}".encode()).hexdigest()[:24]
-
-
 def hour_shape(hour: int, kind: str) -> float:
-    """Load shape multiplier by hour-of-day and customer kind."""
     base = 0.35 + 0.65 * (0.5 + 0.5 * math.sin((hour - 6) / 24 * 2 * math.pi))
     if kind == "residential":
         peak = [0.5, 0.4, 0.35, 0.3, 0.35, 0.5, 0.7, 0.8, 0.7, 0.6, 0.6, 0.65,
@@ -55,8 +44,6 @@ def hour_shape(hour: int, kind: str) -> float:
         peak = [0.5, 0.45, 0.4, 0.4, 0.4, 0.5, 0.6, 0.8, 0.9, 0.9, 0.85, 0.8,
                 0.8, 0.85, 0.9, 0.9, 0.85, 0.8, 0.85, 0.9, 0.85, 0.75, 0.65, 0.55][hour]
     return base * peak
-
-
 def synth_meter(spec, now: dt.datetime, rng: random.Random, scenario: dict | None):
     mid, name, feeder, tx, kind, base, x, y = spec
     mult = hour_shape(now.hour, kind)
@@ -97,10 +84,7 @@ def synth_meter(spec, now: dt.datetime, rng: random.Random, scenario: dict | Non
         "flags": flags,
     }
     return reading
-
-
 def network_tick(now: dt.datetime, scenarios: list[dict]) -> list[dict]:
-    """One consistent snapshot of the whole network at `now` (deterministic per second)."""
     seed = int(now.timestamp() // 4)
     out = []
     for spec in METER_SPECS:
@@ -124,8 +108,6 @@ def network_tick(now: dt.datetime, scenarios: list[dict]) -> list[dict]:
             r["y"] = spec[7]
             out.append(r)
     return out
-
-
 def live_scenarios(rows) -> list[dict]:
     now = dt.datetime.utcnow()
     out = []
@@ -138,10 +120,7 @@ def live_scenarios(rows) -> list[dict]:
             continue
         out.append({"kind": s.kind, "meter_id": s.meter_id, "feeder": s.feeder, "age_s": int(age)})
     return out
-
-
 def history_series(meter_spec, hours: int = 24, now: dt.datetime | None = None) -> list[dict]:
-    """24h synthetic profile for one meter (deterministic)."""
     now = now or dt.datetime.utcnow()
     out = []
     mid, name, feeder, tx, kind, base, x, y = meter_spec
