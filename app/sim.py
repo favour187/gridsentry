@@ -54,14 +54,17 @@ def synth_meter(spec, now: dt.datetime, rng: random.Random, scenario: dict | Non
     phase_cur = [cur / 3 * (0.9 + 0.2 * rng.random()) for _ in range(3)]
     kwh_export = round(base * 24 * 30 * (0.8 + 0.4 * rng.random()), 2)
     reverse_events = 0 if rng.random() > 0.02 else 1
+    freq = 50.0 + rng.uniform(-0.04, 0.04)
+    pf = 0.86 + 0.12 * rng.random()
     flags: dict = {}
     if scenario:
         k = scenario["kind"]
         if k == "bypass" and scenario.get("meter_id") == mid:
             kw *= 0.10
             phase_cur = [c * 0.12 for c in phase_cur]
+            pf = 0.52 + 0.05 * rng.random()  # shunt taps drag power factor down
             flags["cover_open"] = True
-        elif k == "sag" and scenario.get("meter_id") in (None, mid) or (k == "sag" and scenario.get("feeder") == feeder):
+        elif (k == "sag" and scenario.get("meter_id") in (None, mid)) or (k == "sag" and scenario.get("feeder") == feeder):
             v *= 0.78
             phases = [p * 0.78 for p in phases]
         elif k == "imbalance" and scenario.get("meter_id") == mid:
@@ -71,6 +74,20 @@ def synth_meter(spec, now: dt.datetime, rng: random.Random, scenario: dict | Non
         elif k == "tamper" and scenario.get("meter_id") == mid:
             reverse_events += 14
             flags["cover_open"] = True
+        elif k == "neutral" and scenario.get("meter_id") == mid:
+            # lifted/displaced neutral: one phase pushed high, the others sag
+            phases = [v + 32.0, v - 16.0, v - 24.0]
+            flags["cover_open"] = True
+        elif k == "freq" and (scenario.get("feeder") in (None, feeder) or scenario.get("meter_id") == mid):
+            freq = 48.9 + 0.05 * rng.random()
+        elif k == "overload" and scenario.get("meter_id") == mid:
+            kw *= 2.6
+            phase_cur = [c * 2.6 for c in phase_cur]
+        elif k == "outage" and scenario.get("feeder") == feeder:
+            return None
+        elif k == "outage" and scenario.get("meter_id") == mid:
+            return None
+    v = sum(phases) / 3 if scenario and scenario.get("kind") == "neutral" and scenario.get("meter_id") == mid else v
     reading = {
         "meter_id": mid,
         "ts": now.isoformat() + "Z",
@@ -79,6 +96,8 @@ def synth_meter(spec, now: dt.datetime, rng: random.Random, scenario: dict | Non
         "kw": round(kw, 3),
         "kwh_export": kwh_export,
         "reverse_events": reverse_events,
+        "freq_hz": round(freq, 2),
+        "pf": round(pf, 2),
         "phases": [round(p, 1) for p in phases],
         "phase_current": [round(c, 2) for c in phase_cur],
         "flags": flags,
@@ -90,13 +109,18 @@ def network_tick(now: dt.datetime, scenarios: list[dict]) -> list[dict]:
     for spec in METER_SPECS:
         rng = random.Random(seed + int(spec[0].split("-")[1]))
         scen = None
+        feeder_wide = ("sag", "freq", "outage")
+        priority = {"outage": 3, "offline": 3, "sag": 2, "freq": 2}
+        best_rank = -1
         for s in scenarios:
             if s.get("meter_id") == spec[0]:
-                scen = s
+                scen = s  # meter-targeted scenarios always win
+                best_rank = 9
                 break
-            if s.get("kind") == "sag" and s.get("feeder") in (None, spec[2]):
-                scen = s
-                break
+            if s.get("kind") in feeder_wide and s.get("feeder") in (None, spec[2]):
+                rank = priority.get(s.get("kind"), 1)
+                if rank > best_rank:
+                    scen, best_rank = s, rank
         r = synth_meter(spec, now, rng, scen)
         if r:
             r["name"] = spec[1]

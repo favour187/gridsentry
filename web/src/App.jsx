@@ -1,5 +1,36 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { getLive, getNetwork, getMeter, getDevices, postScenario, ackAlert, resolveAlert, investigate } from "./api.js";
+import { getLive, getStats, getMeter, getDevices, postScenario, ackAlert, resolveAlert, investigate, csvUrl } from "./api.js";
+
+/* ---------------- critical alarm ---------------- */
+let audioCtx = null;
+function criticalBeep() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const now = audioCtx.currentTime;
+    [0, 0.28].forEach((off) => {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = "square";
+      o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, now + off);
+      g.gain.exponentialRampToValueAtTime(0.12, now + off + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + off + 0.22);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(now + off);
+      o.stop(now + off + 0.24);
+    });
+  } catch {}
+}
+
+function useMute() {
+  const [muted, setMuted] = useState(() => localStorage.getItem("gs_muted") === "1");
+  const toggle = () => setMuted((m) => {
+    const next = !m;
+    localStorage.setItem("gs_muted", next ? "1" : "0");
+    return next;
+  });
+  return [muted, toggle];
+}
 
 /* ---------------- hooks ---------------- */
 function useLive() {
@@ -34,6 +65,12 @@ const KwBar = ({ kw, base }) => {
   );
 };
 
+const RiskChip = ({ score }) => {
+  if (!score) return <span className="risk risk--ok">0</span>;
+  const cls = score >= 60 ? "risk--crit" : score >= 30 ? "risk--warn" : "risk--low";
+  return <span className={`risk ${cls}`}>{score}</span>;
+};
+
 const Spark = ({ hist }) => {
   if (!hist.length) return null;
   const w = 560, h = 74;
@@ -59,6 +96,8 @@ const Spark = ({ hist }) => {
 function NetworkMap({ meters, alerts, onPick }) {
   if (!meters) return null;
   const byId = Object.fromEntries(meters.map((m) => [m.meter_id, m]));
+  const critScopes = new Set((alerts || []).filter((a) => a.severity === "critical" && !a.meter_id).map((a) => a.scope));
+  const warnScopes = new Set((alerts || []).filter((a) => a.severity === "warning" && !a.meter_id).map((a) => a.scope));
   const alertIds = new Set((alerts || []).filter((a) => a.severity === "critical" && a.meter_id).map((a) => a.meter_id));
   const feeders = [
     { name: "FEEDER-A", spine: 70, tx: [{ id: "TX-A1", y: 118 }, { id: "TX-A2", y: 268 }], row: [150, 300], x0: 120 },
@@ -73,20 +112,21 @@ function NetworkMap({ meters, alerts, onPick }) {
   const col = (s) => (s === "fault" ? "#ff4d5e" : s === "ok" ? "#2fd575" : "#3d5063");
   return (
     <svg className="schem" viewBox="0 0 900 520">
-      <text className="feeder-l" x="34" y="84">FEEDER-A</text>
-      <line className="trunk" x1="70" y1="78" x2="520" y2="78" />
+      <text className={`feeder-l ${critScopes.has("FEEDER-A") ? "fl-fault" : warnScopes.has("FEEDER-A") ? "fl-warn" : ""}`} x="34" y="84">FEEDER-A</text>
+      <line className={`trunk ${critScopes.has("FEEDER-A") ? "trunk-fault" : ""}`} x1="70" y1="78" x2="520" y2="78" />
       <line className="flow" x1="70" y1="78" x2="520" y2="78" />
-      <text className="feeder-l" x="34" y="424">FEEDER-B</text>
-      <line className="trunk" x1="70" y1="418" x2="820" y2="418" />
+      <text className={`feeder-l ${critScopes.has("FEEDER-B") ? "fl-fault" : warnScopes.has("FEEDER-B") ? "fl-warn" : ""}`} x="34" y="424">FEEDER-B</text>
+      <line className={`trunk ${critScopes.has("FEEDER-B") ? "trunk-fault" : ""}`} x1="70" y1="418" x2="820" y2="418" />
       <line className="flow" x1="70" y1="418" x2="820" y2="418" />
       {feeders.map((f) =>
         f.tx.map((t) => {
-          const metersTx = meters.filter((m) => m.transformer === t.id);
-          const yTo = Math.min(...metersTx.map((m) => m.y), f.row[0]) - 18;
+          const txState = critScopes.has(t.id) ? "tx--crit" : warnScopes.has(t.id) ? "tx--warn" : "";
           return (
             <g key={t.id}>
-              <line className="trunk" x1={t.id === "TX-A1" ? 300 : t.id === "TX-A2" ? 300 : 300} y1={t.y + 14} x2={300} y2={t.y + 14 + 22} />
-              <rect className="tx" x="278" y={t.y} width="44" height="26" rx="4" />
+              <line className="trunk" x1="300" y1={t.y + 14} x2="300" y2={t.y + 36} />
+              <rect className={`tx ${txState}`} x="278" y={t.y} width="44" height="26" rx="4">
+                {txState === "tx--crit" && <animate attributeName="opacity" values="1;0.3;1" dur="1s" repeatCount="indefinite" />}
+              </rect>
               <text className="txlabel" x="286" y={t.y + 17}>{t.id}</text>
             </g>
           );
@@ -140,10 +180,20 @@ function Overview({ data, hist, onPick }) {
           <div className="kpi__value">{k.critical}</div>
           <div className="kpi__foot">{k.alerts_open} open incidents total</div>
         </div>
+        <div className={`kpi kpi--health ${k.health < 60 ? "kpi--crit" : k.health < 85 ? "kpi--warn2" : ""}`}>
+          <div className="kpi__label">Fleet health</div>
+          <div className="kpi__value">{k.health}<small>/100</small></div>
+          <div className="kpi__foot">risk-weighted across all meters</div>
+        </div>
+        <div className={`kpi kpi--cyan ${k.grid_freq_hz && Math.abs(k.grid_freq_hz - 50) > 0.3 ? "kpi--crit" : ""}`}>
+          <div className="kpi__label">Grid frequency</div>
+          <div className="kpi__value">{k.grid_freq_hz ? k.grid_freq_hz.toFixed(2) : "--"} <small>Hz</small></div>
+          <div className="kpi__foot">nominal 50.00 Hz</div>
+        </div>
       </div>
       <div className="grid-2">
         <div className="panel">
-          <div className="panel__head">Network schematic — 3 feeders · 4 transformers · 18 meters <span className="fill" /> <span className="mono st-ok">● live</span></div>
+          <div className="panel__head">Network schematic — 2 feeders · 3 transformers · 18 meters <span className="fill" /> <span className="mono st-ok">● live</span></div>
           <div className="schemwrap" style={{ padding: "8px 10px" }}>
             <NetworkMap meters={data.meters} alerts={data.alerts} onPick={onPick} />
           </div>
@@ -186,7 +236,7 @@ function MetersView({ data, picked, setPicked }) {
       <div className="panel">
         <div className="panel__head">Meter fleet — live readings</div>
         <table>
-          <thead><tr><th>ID</th><th>Customer / asset</th><th>Transformer</th><th>Load vs baseline</th><th>kW</th><th>V</th><th>Status</th></tr></thead>
+          <thead><tr><th>ID</th><th>Customer / asset</th><th>Transformer</th><th>Load vs baseline</th><th>kW</th><th>V</th><th>Hz</th><th>PF</th><th>Risk</th><th>Status</th></tr></thead>
           <tbody>
             {d.map((m) => (
               <tr key={m.meter_id} className="rowlink" onClick={() => setPicked(m.meter_id)}>
@@ -196,6 +246,9 @@ function MetersView({ data, picked, setPicked }) {
                 <td><KwBar kw={m.kw} base={m.baseline_kw} /></td>
                 <td>{m.kw.toFixed(2)}</td>
                 <td style={{ color: m.voltage < 195 || m.voltage > 253 ? "var(--crit)" : "var(--muted)" }}>{m.voltage.toFixed(0)}</td>
+                <td className="mono" style={{ color: m.freq_hz && Math.abs(m.freq_hz - 50) > 0.3 ? "var(--crit)" : "var(--muted)" }}>{m.freq_hz ? m.freq_hz.toFixed(2) : "--"}</td>
+                <td className="mono" style={{ color: m.pf != null && m.pf < 0.6 ? "var(--warn)" : "var(--muted)" }}>{m.pf != null ? m.pf.toFixed(2) : "--"}</td>
+                <td className="mono"><RiskChip score={m.risk} /></td>
                 <td className={`mono st-${m.status}`}>{m.status === "ok" ? "● ok" : "● fault"}</td>
               </tr>
             ))}
@@ -209,10 +262,13 @@ function MetersView({ data, picked, setPicked }) {
             <>
               <div style={{ fontWeight: 700, marginBottom: 2 }}>{sel.name}</div>
               <div className="subt mono">{sel.feeder} · {sel.transformer} · {sel.kind}</div>
-              <div style={{ display: "flex", gap: 16, margin: "10px 0" }}>
+              <div style={{ display: "flex", gap: 16, margin: "10px 0", flexWrap: "wrap" }}>
                 <div><div className="kpi__label">Power</div><div className="kpi__value" style={{ fontSize: 20 }}>{sel.kw.toFixed(3)} <small>kW</small></div></div>
                 <div><div className="kpi__label">Baseline</div><div className="kpi__value" style={{ fontSize: 20, color: "var(--muted)" }}>{sel.baseline_kw.toFixed(3)} <small>kW</small></div></div>
                 <div><div className="kpi__label">Voltage</div><div className="kpi__value" style={{ fontSize: 20 }}>{sel.voltage.toFixed(1)} <small>V</small></div></div>
+                <div><div className="kpi__label">Frequency</div><div className="kpi__value" style={{ fontSize: 20 }}>{sel.freq_hz ? sel.freq_hz.toFixed(2) : "--"} <small>Hz</small></div></div>
+                <div><div className="kpi__label">PF</div><div className="kpi__value" style={{ fontSize: 20 }}>{sel.pf != null ? sel.pf.toFixed(2) : "--"}</div></div>
+                <div><div className="kpi__label">Risk</div><div className="kpi__value" style={{ fontSize: 20 }}><RiskChip score={sel.risk} /></div></div>
               </div>
               <div className="kpi__label" style={{ marginBottom: 6 }}>Phase currents L1/L2/L3</div>
               <div className="al__ev" style={{ marginBottom: 14 }}>
@@ -244,10 +300,12 @@ function MetersView({ data, picked, setPicked }) {
 }
 
 /* ---------------- alerts ---------------- */
+const FILTERS = [["all", "All"], ["critical", "Critical"], ["warning", "Warnings"]];
 function AlertsView({ data, reload }) {
   const [reports, setReports] = useState({});
   const [busy, setBusy] = useState(0);
-  const alerts = data?.alerts || [];
+  const [filter, setFilter] = useState("all");
+  const alerts = (data?.alerts || []).filter((a) => filter === "all" || a.severity === filter);
   const gen = async (id) => {
     setBusy(id);
     try {
@@ -257,6 +315,13 @@ function AlertsView({ data, reload }) {
   };
   return (
     <div style={{ maxWidth: 860 }}>
+      <div className="filters">
+        {FILTERS.map(([id, label]) => (
+          <button key={id} className={`chip ${filter === id ? "chip--on" : ""}`} onClick={() => setFilter(id)}>{label}</button>
+        ))}
+        <span className="fill" />
+        <a className="chip chip--link" href={csvUrl} download>⬇ CSV of all incidents</a>
+      </div>
       {alerts.map((a) => (
         <div className="al" key={a.id}>
           <div className="al__top">
@@ -325,6 +390,8 @@ Content-Type: application/json
 {
   `}<span className="s">"voltage"</span>{`: 228.4, `}<span className="s">"current"</span>{`: 4.2, `}<span className="s">"kw"</span>{`: 0.62,
   `}<span className="s">"reverse_events"</span>{`: 0,
+  `}<span className="s">"freq_hz"</span>{`: 50.02,
+  `}<span className="s">"pf"</span>{`: 0.92,
   `}<span className="s">"phases"</span>{`: [229.1, 228.7, 228.9],
   `}<span className="s">"phase_current"</span>{`: [1.5, 1.4, 1.3],
   `}<span className="s">"cover_open"</span>{`: false
@@ -356,6 +423,109 @@ Content-Type: application/json
   );
 }
 
+/* ---------------- analytics ---------------- */
+const KIND_LABELS = {
+  bypass: "Meter bypass", tamper: "Tamper / reverse flow", neutral_tamper: "Neutral/earth tamper",
+  undervoltage: "Undervoltage", overvoltage: "Overvoltage", frequency: "Frequency excursion",
+  imbalance: "Phase imbalance", low_pf: "Low power factor", offline: "Offline meter",
+  overload: "Transformer overload", tx_loss: "Transformer losses", feeder_outage: "Feeder outage",
+};
+function BarRow({ label, open, resolved, max }) {
+  const total = open + resolved;
+  return (
+    <div className="br">
+      <div className="br__l">{label}</div>
+      <div className="br__t">
+        <div className="br__o" style={{ width: `${(open / max) * 100}%` }} />
+        <div className="br__r" style={{ width: `${(resolved / max) * 100}%` }} />
+      </div>
+      <div className="br__n mono">{open} open · {resolved} done</div>
+    </div>
+  );
+}
+function AnalyticsView({ live }) {
+  const [stats, setStats] = useState(null);
+  useEffect(() => {
+    const load = () => getStats().then(setStats).catch(() => {});
+    load();
+    const iv = setInterval(load, 6000);
+    return () => clearInterval(iv);
+  }, []);
+  if (!stats) return <div className="subt">Crunching incident history…</div>;
+  const health = live?.kpis.health ?? 100;
+  const maxKind = Math.max(1, ...stats.by_kind.map((k) => k.open + k.resolved));
+  const trendMax = Math.max(1, ...stats.trend_24h.map((t) => t.alerts));
+  return (
+    <div>
+      <div className="kpis">
+        <div className={`kpi kpi--health ${health < 60 ? "kpi--crit" : health < 85 ? "kpi--warn2" : ""}`}>
+          <div className="kpi__label">Fleet health</div>
+          <div className="kpi__value">{health}<small>/100</small></div>
+          <div className="kpi__foot">0 = every rule firing, 100 = clean</div>
+        </div>
+        <div className="kpi kpi--cyan">
+          <div className="kpi__label">Incidents total</div>
+          <div className="kpi__value">{stats.total}</div>
+          <div className="kpi__foot">{stats.by_status.open} open · {stats.by_status.ack} acked · {stats.by_status.resolved} resolved</div>
+        </div>
+        <div className="kpi kpi--ok">
+          <div className="kpi__label">Resolution rate</div>
+          <div className="kpi__value">{stats.resolution_rate_pct}<small>%</small></div>
+          <div className="kpi__foot">share of incidents closed</div>
+        </div>
+        <div className="kpi kpi--warn">
+          <div className="kpi__label">Mean time to resolve</div>
+          <div className="kpi__value">
+            {stats.mttr_minutes == null ? "—"
+              : stats.mttr_minutes < 60 ? <>{stats.mttr_minutes.toFixed(0)}<small>m</small></>
+              : <>{(stats.mttr_minutes / 60).toFixed(1)}<small>h</small></>}
+          </div>
+          <div className="kpi__foot">created → resolved, demo clock</div>
+        </div>
+      </div>
+      <div className="grid-2">
+        <div className="panel">
+          <div className="panel__head">Incidents by detection family</div>
+          <div style={{ padding: "12px 14px" }}>
+            {stats.by_kind.length === 0 && <div className="subt">No incidents recorded yet — arm a scenario.</div>}
+            {stats.by_kind.map((k) => (
+              <BarRow key={k.kind} label={KIND_LABELS[k.kind] || k.kind} open={k.open} resolved={k.resolved} max={maxKind} />
+            ))}
+            <div className="legend"><span><i className="lg lg--o" /> open</span><span><i className="lg lg--r" /> resolved</span></div>
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div className="panel">
+            <div className="panel__head">Alerts raised — last 24 h (hourly)</div>
+            <div className="trend">
+              {stats.trend_24h.map((t, i) => (
+                <div key={i} className="trend__b" title={`${t.hour}: ${t.alerts}`}>
+                  <i style={{ height: `${(t.alerts / trendMax) * 100}%` }} className={t.alerts ? "on" : ""} />
+                  {(i % 4 === 0) && <span>{t.hour.slice(0, 2)}</span>}
+                  {(i % 4 !== 0) && <span> </span>}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="panel" style={{ flex: 1 }}>
+            <div className="panel__head">Highest-risk meters now</div>
+            <div style={{ padding: "10px 14px" }}>
+              {(live?.at_risk || []).length === 0 && <div className="subt">No meter carrying risk right now.</div>}
+              {(live?.at_risk || []).map((m) => (
+                <div className="tk" key={m.meter_id}>
+                  <RiskChip score={m.score} />
+                  <b className="mono">{m.meter_id}</b>
+                  <span className="subt">{m.reasons.join(", ")}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- scenario bar ---------------- */
 function ScenarioBar({ onFire }) {
   const fire = (kind, meter_id, feeder) => postScenario(kind, meter_id, feeder).then(onFire);
@@ -369,6 +539,12 @@ function ScenarioBar({ onFire }) {
         <button className="scen__btn" onClick={() => fire("tamper", "M-110")}>🔓 Tamper M-110</button>
         <button className="scen__btn" onClick={() => fire("offline", "M-108")}>📴 Offline M-108</button>
       </div>
+      <div className="scen__row">
+        <button className="scen__btn scen__btn--v2" onClick={() => fire("neutral", "M-104")}>〰 Neutral tamper M-104</button>
+        <button className="scen__btn scen__btn--v2" onClick={() => fire("freq", null, "FEEDER-B")}>🕓 Frequency event FEEDER-B</button>
+        <button className="scen__btn scen__btn--v2" onClick={() => fire("overload", "M-106")}>🔥 Overload TX-A2</button>
+        <button className="scen__btn scen__btn--v2" onClick={() => fire("outage", null, "FEEDER-B")}>⚫ Feeder outage B</button>
+      </div>
     </div>
   );
 }
@@ -379,6 +555,19 @@ export default function App() {
   const [view, setView] = useState("overview");
   const [picked, setPicked] = useState(null);
   const [toast, setToast] = useState(null);
+  const [muted, toggleMute] = useMute();
+  const critKeys = useRef(new Set());
+  const firstTick = useRef(true);
+  useEffect(() => {
+    if (!data) return;
+    const keys = new Set(data.alerts.filter((a) => a.severity === "critical").map((a) => a.id ?? a.key));
+    if (!firstTick.current && !muted) {
+      const fresh = [...keys].some((k) => !critKeys.current.has(k));
+      if (fresh) criticalBeep();
+    }
+    firstTick.current = false;
+    critKeys.current = keys;
+  }, [data, muted]);
   const reload = () => getLive().then(() => {});
   const fire = () => {
     setToast("Scenario armed — engine is watching the board…");
@@ -387,6 +576,7 @@ export default function App() {
   const crit = data?.kpis.critical || 0;
   const nav = [
     { id: "overview", label: "Overview", ic: "▦" },
+    { id: "analytics", label: "Analytics", ic: "📈" },
     { id: "meters", label: "Meters", ic: "◍" },
     { id: "alerts", label: "Alerts", ic: "⚠", badge: crit },
     { id: "devices", label: "Devices & API", ic: "⌁" },
@@ -409,7 +599,7 @@ export default function App() {
           </button>
         ))}
         <div className="side__foot">
-          VoltHacks 2026<br />Sustainability &amp; Smart Cities<br />demo fleet · 18 virtual meters
+          VoltHacks 2026 · v2.0<br />Sustainability &amp; Smart Cities<br />18 meters · 12 detection families
         </div>
       </aside>
       <div className="main">
@@ -417,12 +607,16 @@ export default function App() {
           <span className="live"><span className="dot" />TELEMETRY LIVE</span>
           <span className="clock mono">{clock}</span>
           <span className="fill" />
+          <button className="mutebtn" onClick={toggleMute} title={muted ? "Unmute critical alarms" : "Mute critical alarms"}>
+            {muted ? "🔇" : "🔊"}
+          </button>
           {data && (
             <span className="losspill">network loss <b>{data.kpis.loss_pct.toFixed(1)}%</b></span>
           )}
         </header>
         <main className="content">
           {view === "overview" && <Overview data={data} hist={hist} onPick={(id) => { setPicked(id); setView("meters"); }} />}
+          {view === "analytics" && <AnalyticsView live={data} />}
           {view === "meters" && <MetersView data={data} picked={picked} setPicked={setPicked} />}
           {view === "alerts" && <AlertsView data={data} reload={reload} />}
           {view === "devices" && <DevicesView />}

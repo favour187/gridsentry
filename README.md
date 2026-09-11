@@ -14,27 +14,34 @@ Distribution losses in many grid utilities run at 20–40%, a large share of it 
 
 ## What it does
 
-1. **Live network board** — animated single-line schematic: 2 feeders → 4 transformers → 18 meters, node colors flip to red the moment a rule fires; delivered-vs-expected power, live network-loss KPI, load sparkline, alert ticker.
-2. **Deterministic detection engine** (`app/engine.py`) — six rule families over each telemetry snapshot:
+1. **Live network board** — animated single-line schematic: 2 feeders → 3 transformers → 18 meters, node colors flip to red the moment a rule fires; delivered-vs-expected power, live network-loss KPI, load sparkline, alert ticker.
+2. **Deterministic detection engine** (`app/engine.py`) — twelve rule families over each telemetry snapshot:
    - **Bypass / diversion** — load collapses to <45% of the meter's hour-of-day baseline while voltage stays healthy.
    - **Tamper** — reverse-flow events plus cover-open flags.
    - **Under/over-voltage** — warning under 195 V, critical under 185 V, warning above 253 V.
    - **Phase imbalance** — L1/L2/L3 current spread >45%.
    - **Offline meter** — a meter that stops reporting is an unguarded meter.
    - **Transformer-group losses** — delivered vs expected on the whole TX group; catches theft that individual meters hide.
-3. **Field-test console** — arm bypass / feeder sag / imbalance / tamper / offline scenarios and watch detection happen live on camera.
-4. **AI investigator** — one click turns an alert into a field-supervisor brief: what happened, evidence, likely cause, exact field action. Deterministic offline provider by default; any OpenAI-compatible LLM (Groq) when configured. The AI only rewrites the evidence on file — it never invents numbers.
-5. **Real device ingestion** — `POST /api/ingest/{meter_id}` with a per-meter device token; ESP32 + SCT-013 CT-clamp reference sketch included in the console's *Devices & API* tab. Device telemetry and simulated telemetry go through the exact same rules.
+   - **Neutral/earth tamper (v2)** — phase-to-neutral voltages pulled >14 V apart, the signature of a lifted neutral or earth-tap.
+   - **Grid-frequency excursion (v2)** — warning beyond 49.7–50.3 Hz, critical beyond 49.5–50.5 Hz.
+   - **Low power factor (v2)** — PF collapse below 0.60 flags inductive shunt taps and reactive drain.
+   - **Transformer overload (v2)** — group load vs nameplate kW, warning at 90 %, critical at 105 %.
+   - **Feeder outage (v2)** — ≥60 % of a feeder's meters going silent in the same interval is an outage, not twelve tickets.
+   - **Per-meter risk score + fleet health (v2)** — every meter carries a 0–100 weighted risk index; the board shows a fleet health KPI and highest-risk meter ranking.
+3. **Field-test console** — arm nine scenarios (bypass, feeder sag, imbalance, tamper, single-meter offline, neutral tamper, frequency event, transformer overload, whole-feeder outage) and watch detection happen live on camera. The schematic now colours transformers and feeders for group-level faults.
+4. **Analytics (v2)** — `/api/stats` and the Analytics tab: incidents by detection family (open vs resolved), 24-hour alert trend, resolution rate, mean time to resolve, live risk ranking; full audit trail exportable as CSV from `/api/incidents.csv`. Critical alerts trigger an audible console alarm (mutable).
+5. **AI investigator** — one click turns an alert into a field-supervisor brief: what happened, evidence, likely cause, exact field action. Deterministic offline provider by default; any OpenAI-compatible LLM (Groq) when configured. The AI only rewrites the evidence on file — it never invents numbers.
+6. **Real device ingestion** — `POST /api/ingest/{meter_id}` with a per-meter device token; ESP32 + SCT-013 CT-clamp reference sketch included in the console's *Devices & API* tab. Device telemetry and simulated telemetry go through the exact same rules (including the v2 frequency/PF channels).
 
 ## How Python is used
 
 | Layer | Python |
 |---|---|
-| **Simulation core** (`app/sim.py`) | Pure-stdlib virtual grid: hour-of-day load shapes per customer class (residential, industrial, shop, health, utility), per-second deterministic randomness (`random.Random(seed)`), scenario injection (bypass ×0.1 load, sag ×0.78 voltage, forced phase imbalance, comms loss, tamper events). |
+| **Simulation core** (`app/sim.py`) | Pure-stdlib virtual grid: hour-of-day load shapes per customer class (residential, industrial, shop, health, utility), per-second deterministic randomness (`random.Random(seed)`), scenario injection (bypass ×0.1 load with PF collapse, sag ×0.78 voltage, forced phase imbalance, comms loss, tamper events, neutral/earth phase split, 48.9 Hz frequency event, ×2.6 transformer overload, whole-feeder outage) plus 50 Hz/PF telemetry channels. |
 | **Detection engine** (`app/engine.py`) | The product's brain: transparent, unit-tested rules over snapshots — every alert carries a machine-readable `evidence` dict (the exact numbers that fired it). No black box. |
-| **API** | FastAPI + Pydantic + SQLAlchemy 2 (meters, readings, alerts, scenarios) on SQLite/Postgres; token-authenticated device ingestion; alert lifecycle (open → acknowledged → resolved) with 30-minute evidence dedup windows. |
+| **API** | FastAPI + Pydantic + SQLAlchemy 2 (meters, readings, alerts, scenarios) on SQLite/Postgres; token-authenticated device ingestion; alert lifecycle (open → acknowledged → resolved) with 30-minute evidence dedup windows; `/api/stats` analytics (MTTR, resolution rate, 24 h trend) and CSV incident export. |
 | **AI layer** (`app/ai_skills.py`) | Deterministic investigator (always available) + optional OpenAI-compatible LLM refinement with retries and graceful fallback. |
-| **Tests** | 15 pytest tests: every detection rule (fire **and** not-fire on healthy telemetry), severity boundaries, scenario→alert integration through the API, ingestion auth, alert lifecycle, investigator grounding — run by GitHub Actions on every push. |
+| **Tests** | 32 pytest tests: every detection rule (fire **and** not-fire on healthy telemetry), severity boundaries, all nine scenario→alert integrations through the API, feeder-outage topology, risk scoring, ingestion auth/channel handling, stats/CSV endpoints, alert lifecycle, investigator grounding — run by GitHub Actions on every push. |
 
 The React front-end is a thin client: every number it renders came from the Python engine.
 
