@@ -85,7 +85,7 @@ Python 3.11+, FastAPI, Pydantic, SQLAlchemy 2, pytest, httpx Â· React 18, Vite Â
 
 ## AI-assistance disclosure
 
-Development was assisted by AI coding tools (Claude-based agent tooling on the Arena.ai platform). Architecture, detection logic, formulas and code were directed, reviewed and are understood by the author. The investigator uses a deterministic rule-based local provider by default; an optional OpenAI-compatible LLM can be enabled by configuration.
+Development was assisted by AI coding tools. Architecture, detection logic, formulas and code were directed, reviewed and are understood by the author. The investigator uses a deterministic rule-based local provider by default; an optional OpenAI-compatible LLM can be enabled by configuration.
 
 ## License
 
